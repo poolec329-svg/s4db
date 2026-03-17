@@ -1,14 +1,133 @@
 # s4db
 
-A lightweight key-value database backed by S3. Keys and values are strings. Values are snappy-compressed and packed into numbered binary data files that are written locally and pushed to S3. Reads use S3 byte-range fetches, only the bytes for the requested key are transferred.
+A lightweight key-value database backed by S3. Keys and values are strings. Values are snappy-compressed and packed into numbered binary data files stored locally and synced to S3.
 
 ## How it works
 
-Writes are append-only. Each `put` or `delete` call creates one or more numbered data files (`data_000001.s4db`, `data_000002.s4db`, ...) and pushes them to S3. A separate index file (`index.json`) maps every live key to its file number, byte offset, and entry length. The index is loaded from S3 at startup and updated after every write.
+s4db uses `local_dir` as the working store and S3 as durable remote storage. The two are kept in sync automatically on every write, but you control when full bulk syncs happen via `download()` and `upload()`.
 
-Reads look up the key in the index, fetch exactly those bytes from S3 using a range request, verify the CRC, decompress the value, and return it.
+**Index** — an `index.json` file maps every live key to its data file number, byte offset, and entry length. It is loaded into memory at startup and updated after every write.
 
-Updates overwrite the index entry to point at the new location; the old bytes are left in place and cleaned up during compaction. Deletes write a tombstone entry to disk and remove the key from the index.
+**Startup** — the index is loaded from `local_dir/index.json` if present, otherwise downloaded from S3.
+
+**Writes** (`put`, `delete`) — entries are appended to the latest data file in `local_dir`. When the file reaches `max_file_size` a new one is started. After each write the updated data file and index are pushed to S3 automatically.
+
+**Reads** (`get`) — the index is checked first. If the data file is present in `local_dir` the value is read directly from disk. If the file is not local, only the exact bytes for that entry are fetched from S3 using a range request — the full file is never downloaded unless you call `download()`.
+
+**Bulk sync** — `download()` pulls all data files and the index from S3 into `local_dir`. `upload()` pushes all local data files and the index to S3. Use these for initial setup, disaster recovery, or moving data between environments.
+
+**Compaction** — reads all local data files, keeps only the latest value for each live key, discards tombstones, rewrites the live data into new files, and deletes the old files from both `local_dir` and S3.
+
+**Rebuild index** — scans local data files in order and reconstructs the index from scratch. Run `download()` first if the local files are out of date.
+
+## Installation
+
+```bash
+pip install s4db
+```
+
+Requires `python-snappy`, which links against the native Snappy library.
+
+```bash
+# macOS
+brew install snappy
+
+# Ubuntu / Debian
+apt-get install libsnappy-dev
+```
+
+## Usage
+
+### Opening a database
+
+```python
+from s4db import S4DB
+
+db = S4DB(
+    local_dir="/data/my-db",         # local directory for data files and index
+    bucket="my-bucket",              # S3 bucket
+    prefix="my-db/",                 # S3 key prefix
+    max_file_size=64 * 1024 * 1024,  # optional, default 64 MB
+    region_name="us-east-1",         # any extra kwargs go to boto3.client("s3", ...)
+)
+```
+
+On init, s4db loads the index from `local_dir` if it exists, otherwise downloads it from S3. To also pull all data files locally, call `db.download()` after init.
+
+### Writing
+
+```python
+db.put({"key1": "value1", "key2": "value2"})
+```
+
+Appends entries to the latest data file in `local_dir`. When the file reaches `max_file_size` it is closed and a new one is started. The updated file and index are pushed to S3 before the call returns.
+
+### Reading
+
+```python
+value = db.get("key1")   # returns the string value, or None if not found
+```
+
+Looks up the key in the index, then:
+
+- If the data file exists in `local_dir` — reads the exact bytes from disk.
+- If the data file is not local — fetches only the bytes for that entry from S3 using a range request.
+
+The full data file is never downloaded implicitly. Call `download()` to bring all files local.
+
+### Deleting
+
+```python
+db.delete(["key1", "key2"])
+```
+
+Appends tombstone entries to the latest data file, removes the keys from the in-memory index, and pushes to S3. Only keys that currently exist in the index are written.
+
+### Syncing with S3
+
+```python
+db.download()   # pull all data files and the index from S3 into local_dir
+db.upload()     # push all local data files and the index to S3
+```
+
+`download()` is the right starting point when pointing a fresh `local_dir` at an existing S3 database. After `download()`, all reads are served from disk. `upload()` is useful after bulk operations like `compact()` or `rebuild_index()` if you want to force a full re-sync.
+
+### Compaction
+
+```python
+db.compact()
+```
+
+Reads all local data files, keeps only the latest value for each live key, discards tombstones, writes the result into new numbered files in `local_dir`, uploads them to S3, and deletes the old files from both places. Run `download()` first if the local directory may be out of date.
+
+### Rebuilding the index
+
+```python
+db.rebuild_index()
+```
+
+Scans every local data file in order and reconstructs the index from scratch. Saves the new index locally and uploads it to S3. Useful for recovery if the index file is lost or corrupted — run `download()` first to ensure all data files are present locally.
+
+### Context manager
+
+```python
+with S4DB("/data/my-db", "my-bucket", "my-db/") as db:
+    db.put({"k": "v"})
+    print(db.get("k"))
+```
+
+## S3 layout
+
+Given `bucket="my-bucket"` and `prefix="my-db/"`:
+
+```
+my-bucket/
+  my-db/
+    index.json
+    data_000001.s4db
+    data_000002.s4db
+    ...
+```
 
 ## Data file format
 
@@ -45,97 +164,6 @@ Entry:
 ```
 
 Each entry value is `[file_num, byte_offset, entry_length]`. Deleted keys are removed from the index.
-
-## Installation
-
-```bash
-pip install s4db
-```
-
-Requires `python-snappy`, which links against the native Snappy library.
-
-```bash
-# macOS
-brew install snappy
-
-# Ubuntu / Debian
-apt-get install libsnappy-dev
-```
-
-## Usage
-
-```python
-from s4db import S4DB
-
-db = S4DB(
-    bucket="my-bucket",
-    prefix="my-db/",
-    max_file_size=64 * 1024 * 1024,  # 64 MB, default
-    local_dir="/tmp/s4db",           # optional, defaults to a temp dir
-    region_name="us-east-1",         # any extra kwargs go to boto3.client("s3", ...)
-)
-```
-
-### Writing
-
-```python
-db.put({"key1": "value1", "key2": "value2"})
-```
-
-Creates one or more `.s4db` files locally, uploads them to S3, and updates the index. If a single batch exceeds `max_file_size`, it is split across multiple files automatically.
-
-### Reading
-
-```python
-value = db.get("key1")   # returns the string value, or None if not found
-```
-
-Issues a single S3 byte-range GET for the exact bytes of that entry.
-
-### Deleting
-
-```python
-db.delete(["key1", "key2"])
-```
-
-Writes tombstone entries to a new data file, removes the keys from the index, and pushes to S3. Only keys that currently exist in the index are written.
-
-### Compaction
-
-```python
-db.compact()
-```
-
-Downloads all data files, keeps only the latest value for each key, discards tombstones, rewrites the live data into new numbered files, updates the index, and deletes the old files from S3.
-
-### Rebuilding the index
-
-```python
-db.rebuild_index()
-```
-
-Scans every data file on S3 in order and reconstructs the index from scratch. Use this for recovery if the index file is lost or corrupted.
-
-### Context manager
-
-```python
-with S4DB("my-bucket", "my-db/") as db:
-    db.put({"k": "v"})
-    print(db.get("k"))
-```
-
-## S3 layout
-
-Given `bucket="my-bucket"` and `prefix="my-db/"`:
-
-```
-my-bucket/
-  my-db/
-    index.json
-    data_000001.s4db
-    data_000002.s4db
-    ...
-```
 
 ## Dependencies
 

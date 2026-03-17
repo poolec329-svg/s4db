@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import glob as _glob
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -7,12 +9,14 @@ if TYPE_CHECKING:
 
 
 def compact(db: "S4DB") -> None:
-    old_filenames = db.storage.list_data_files()
+    old_paths = sorted(_glob.glob(os.path.join(db.local_dir, "data_*.s4db")))
+    old_filenames = [os.path.basename(p) for p in old_paths]
 
     # Build latest view: key -> value or None (tombstone)
     latest: dict[str, str | None] = {}
-    for filename in old_filenames:
-        data = db.storage.download_bytes(filename)
+    for path in old_paths:
+        with open(path, "rb") as fh:
+            data = fh.read()
         from ._format import iter_file_entries, FLAG_TOMBSTONE
         for _offset, _length, key, value, flags in iter_file_entries(data):
             if flags == FLAG_TOMBSTONE:
@@ -20,10 +24,13 @@ def compact(db: "S4DB") -> None:
             else:
                 latest[key] = value
 
-    # Keep only live entries
     live_entries = [(k, v) for k, v in latest.items() if v is not None]
 
-    # Reset index entries (keep next_file_num as-is; _write_entries will update it)
+    # Remove old local files before writing so _write_entries starts a new file
+    for path in old_paths:
+        os.remove(path)
+
+    # Reset index entries (keep next_file_num so new files get fresh numbers)
     db._index.entries.clear()
 
     # Write compacted files

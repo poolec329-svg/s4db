@@ -47,9 +47,9 @@ def s3(aws_env):
 @pytest.fixture
 def db(s3, tmp_path):
     return S4DB(
+        local_dir=str(tmp_path),
         bucket=BUCKET,
         prefix=PREFIX,
-        local_dir=str(tmp_path),
         region_name="us-east-1",
     )
 
@@ -166,14 +166,14 @@ class TestIndex:
 
 class TestS4DBInit:
     def test_init_no_index(self, s3, tmp_path):
-        db = S4DB(bucket=BUCKET, prefix=PREFIX, local_dir=str(tmp_path), region_name="us-east-1")
+        db = S4DB(local_dir=str(tmp_path), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
         assert db._index.next_file_num == 1
         assert db._index.entries == {}
 
     def test_init_loads_existing_index(self, db):
         db.put({"x": "y"})
-        # Re-open
-        db2 = S4DB(bucket=BUCKET, prefix=PREFIX, local_dir=str(db.local_dir), region_name="us-east-1")
+        # Re-open using same local_dir (index loaded from local file)
+        db2 = S4DB(local_dir=db.local_dir, bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
         assert db2.get("x") == "y"
 
 
@@ -233,10 +233,10 @@ class TestFileRolling:
         # With max_file_size=29: after writing entry1 buf=30 bytes > 29,
         # so entry2 triggers a roll, producing multiple files.
         db = S4DB(
+            local_dir=str(tmp_path),
             bucket=BUCKET,
             prefix=PREFIX,
             max_file_size=29,
-            local_dir=str(tmp_path),
             region_name="us-east-1",
         )
         db.put({"k1": "v" * 50, "k2": "v" * 50, "k3": "v" * 50})
@@ -249,10 +249,10 @@ class TestFileRolling:
 
     def test_no_empty_files(self, s3, tmp_path):
         db = S4DB(
+            local_dir=str(tmp_path),
             bucket=BUCKET,
             prefix=PREFIX,
             max_file_size=50,
-            local_dir=str(tmp_path),
             region_name="us-east-1",
         )
         db.put({"k": "v"})
@@ -320,12 +320,12 @@ class TestRebuildIndex:
 
 class TestContextManager:
     def test_context_manager(self, s3, tmp_path):
-        with S4DB(bucket=BUCKET, prefix=PREFIX, local_dir=str(tmp_path), region_name="us-east-1") as db:
+        with S4DB(local_dir=str(tmp_path), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1") as db:
             db.put({"ctx": "works"})
             assert db.get("ctx") == "works"
 
     def test_context_manager_returns_self(self, s3, tmp_path):
-        db = S4DB(bucket=BUCKET, prefix=PREFIX, local_dir=str(tmp_path), region_name="us-east-1")
+        db = S4DB(local_dir=str(tmp_path), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
         with db as db2:
             assert db2 is db
 
@@ -341,5 +341,6 @@ class TestIndexPersistence:
         assert db._index.next_file_num == 1
         db.put({"k": "v"})
         assert db._index.next_file_num == 2
+        # Second put appends to the existing file (still has room), so next_file_num stays 2
         db.put({"k2": "v2"})
-        assert db._index.next_file_num == 3
+        assert db._index.next_file_num == 2
