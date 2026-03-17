@@ -91,10 +91,18 @@ class S4DB:
     def _write_entries(self, entries: list[tuple[str, str | None, bool]]) -> None:
         os.makedirs(self.local_dir, exist_ok=True)
 
-        state = {
-            "file_num": self._index.next_file_num,
-            "buf": bytearray(pack_file_header(self._index.next_file_num)),
-        }
+        # Resume writing into the latest file if it still has room, otherwise start a new one
+        latest_file_num = self._index.next_file_num - 1
+        file_num = self._index.next_file_num
+        buf = bytearray(pack_file_header(file_num))
+
+        if latest_file_num >= 1 and self.storage.exists(_data_filename(latest_file_num)):
+            existing_data = self.storage.download_bytes(_data_filename(latest_file_num))
+            if len(existing_data) < self.max_file_size:
+                file_num = latest_file_num
+                buf = bytearray(existing_data)
+
+        state = {"file_num": file_num, "buf": buf}
         # Tracks (key, file_num, offset, length) for non-tombstone entries
         written: list[tuple[str, int, int, int]] = []
 
