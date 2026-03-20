@@ -11,6 +11,7 @@ _DEFAULT_MAX_FILE_SIZE = 64 * 1024 * 1024  # 64 MB
 
 
 def _data_filename(file_num: int) -> str:
+    """Returns the canonical filename for a data file given its sequence number."""
     return f"data_{file_num:06d}.s4db"
 
 
@@ -23,6 +24,13 @@ class S4DB:
         max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
         **boto_kwargs,
     ):
+        """Opens (or creates) an S4DB database backed by local_dir and an S3 bucket.
+
+        On init the index is loaded from local_dir if present; otherwise it is fetched
+        from S3 and cached locally. If neither exists the database starts empty.
+        max_file_size controls when data files are rolled over (default 64 MB).
+        Extra boto_kwargs are forwarded to the S3 client.
+        """
         self.local_dir = local_dir
         self.bucket = bucket
         self.prefix = prefix
@@ -61,6 +69,11 @@ class S4DB:
         self.storage.upload(local_index, _INDEX_FILENAME)
 
     def get(self, key: str) -> str | None:
+        """Returns the value for key, or None if it does not exist or has been deleted.
+
+        Reads from the local data file when it is present; falls back to a ranged S3
+        read for the exact byte span of the entry, avoiding a full file download.
+        """
         entry = self._index.get(key)
         if entry is None:
             return None
@@ -75,10 +88,20 @@ class S4DB:
         return value
 
     def put(self, items: dict[str, str]) -> None:
+        """Writes one or more key/value pairs, appending to the current data file.
+
+        Overwrites any existing value for a key. Persists to disk and updates
+        the in-memory index and saved index file before returning.
+        """
         entries = [(k, v, False) for k, v in items.items()]
         self._write_entries(entries)
 
     def delete(self, keys: list[str]) -> None:
+        """Writes tombstones for each key that currently exists in the index.
+
+        Keys not present in the index are silently skipped — no tombstone is written
+        for them. The index is updated and saved after writing.
+        """
         tombstones = [
             (k, None, True)
             for k in keys
@@ -88,9 +111,16 @@ class S4DB:
             self._write_entries(tombstones)
 
     def compact(self) -> None:
+        """Triggers compaction, rewriting data files to reclaim space from deleted/stale entries."""
         run_compaction(self)
 
     def rebuild_index(self) -> None:
+        """Reconstructs the in-memory index by replaying all local data files in order.
+
+        Useful for disaster recovery when the index file is lost or corrupted. Applies
+        entries sequentially so later writes correctly overwrite earlier ones and tombstones
+        remove deleted keys. Persists the rebuilt index to disk before returning.
+        """
         data_files = sorted(_glob.glob(os.path.join(self.local_dir, "data_*.s4db")))
         new_index = Index()
         last_file_num = 0
@@ -110,12 +140,21 @@ class S4DB:
         self._save_index()
 
     def _save_index(self) -> None:
+        """Serializes the in-memory index and writes it to the local index file."""
         data = self._index.to_bytes()
         local_path = os.path.join(self.local_dir, _INDEX_FILENAME)
         with open(local_path, "wb") as fh:
             fh.write(data)
 
     def _write_entries(self, entries: list[tuple[str, str | None, bool]]) -> None:
+        """Appends a batch of entries to the current data file, rolling to a new file when needed.
+
+        Entries is a list of (key, value, is_tombstone) tuples. Resumes the latest data
+        file when it is under max_file_size; otherwise creates a new file. If a single
+        entry would push a non-empty file over the size limit, roll() is called first so
+        the entry lands at the start of a fresh file. Index and on-disk state are updated
+        atomically after all entries are written.
+        """
         # Resume writing into the latest file if it still has room, otherwise start a new one
         latest_file_num = self._index.next_file_num - 1
         latest_path = os.path.join(self.local_dir, _data_filename(latest_file_num))
@@ -130,6 +169,7 @@ class S4DB:
         written: list[tuple[str, int, int, int]] = []
 
         def roll():
+            """Closes the current file and opens the next sequentially numbered data file."""
             nonlocal file_num, fh
             fh.close()
             file_num += 1
@@ -160,7 +200,9 @@ class S4DB:
         self._save_index()
 
     def __enter__(self) -> "S4DB":
+        """Supports use as a context manager; returns self."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """No-op exit; included so S4DB can be used in a with statement."""
         pass

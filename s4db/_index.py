@@ -17,19 +17,29 @@ class IndexEntry:
 
 class Index:
     def __init__(self):
+        """Initializes an empty index with next_file_num starting at 1."""
         self.entries: dict[str, IndexEntry] = {}
         self.next_file_num: int = 1
 
     def get(self, key: str) -> IndexEntry | None:
+        """Returns the IndexEntry for key, or None if the key is not present."""
         return self.entries.get(key)
 
     def put(self, key: str, file_num: int, offset: int, length: int) -> None:
+        """Inserts or overwrites the index entry for key with the given file location."""
         self.entries[key] = IndexEntry(file_num=file_num, offset=offset, length=length)
 
     def delete(self, key: str) -> None:
+        """Removes key from the index. Silent no-op if the key does not exist."""
         self.entries.pop(key, None)
 
     def to_bytes(self) -> bytes:
+        """Serializes the entire index to a compact binary blob.
+
+        Format: fixed-size header (version, next_file_num, entry count) followed by
+        each entry as [2B key_len][key bytes][4B file_num][8B offset][4B length].
+        Returns the concatenated bytes; does not write to disk.
+        """
         parts = [_HEADER.pack(1, self.next_file_num, len(self.entries))]
         for key, e in self.entries.items():
             key_bytes = key.encode("utf-8")
@@ -40,6 +50,11 @@ class Index:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "Index":
+        """Deserializes an Index from a binary blob produced by to_bytes().
+
+        Raises ValueError if the version field is not 1. Returns a fully populated Index
+        with next_file_num and all entries restored.
+        """
         version, next_file_num, num_entries = _HEADER.unpack_from(data, 0)
         if version != 1:
             raise ValueError(f"unsupported index version: {version}")

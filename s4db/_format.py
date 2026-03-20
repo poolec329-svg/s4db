@@ -14,10 +14,12 @@ ENTRY_OVERHEAD = 13
 
 
 def pack_file_header(file_num: int) -> bytes:
+    """Serializes the 9-byte file header: magic bytes, version, and file number."""
     return MAGIC + struct.pack(">BL", VERSION, file_num)
 
 
 def unpack_file_header(data: bytes) -> tuple[int, int]:
+    """Parses a 9-byte file header, returning (version, file_num). Raises ValueError on bad magic."""
     if data[:4] != MAGIC:
         raise ValueError(f"Invalid magic: {data[:4]!r}")
     version, file_num = struct.unpack(">BL", data[4:9])
@@ -25,6 +27,12 @@ def unpack_file_header(data: bytes) -> tuple[int, int]:
 
 
 def pack_entry(key: str, value: str | None, deleted: bool = False) -> bytes:
+    """Serializes a key/value pair into a binary entry with a CRC trailer.
+
+    Tombstone entries (deleted=True) carry an empty value body and set FLAG_TOMBSTONE.
+    Live values are Snappy-compressed before being written. Returns the complete
+    entry bytes including flags, lengths, key, value, and CRC.
+    """
     key_bytes = key.encode("utf-8")
     if deleted:
         flags = FLAG_TOMBSTONE
@@ -43,6 +51,12 @@ def pack_entry(key: str, value: str | None, deleted: bool = False) -> bytes:
 
 
 def unpack_entry_at(data: bytes, offset: int = 0) -> tuple[str, str | None, int, int]:
+    """Deserializes one entry from data starting at offset.
+
+    Returns (key, value, flags, entry_length). value is None for tombstones.
+    Raises ValueError if the stored CRC does not match the computed CRC.
+    entry_length is the total byte span of this entry, useful for advancing to the next one.
+    """
     flags, key_len, value_len = struct.unpack(">BLL", data[offset : offset + 9])
     pos = offset + 9
     key = data[pos : pos + key_len].decode("utf-8")
@@ -66,7 +80,12 @@ def unpack_entry_at(data: bytes, offset: int = 0) -> tuple[str, str | None, int,
 
 
 def stream_file_entries(fh):
-    """Yield (offset, raw_bytes, key, flags) one entry at a time from a file handle."""
+    """Yields (offset, raw_bytes, key, flags) for each entry in a data file handle.
+
+    Seeks past the file header before reading. Stops cleanly when a partial or missing
+    header is encountered at EOF. Does not validate CRCs — callers that need integrity
+    checking should call unpack_entry_at on the yielded raw_bytes.
+    """
     fh.seek(HEADER_SIZE)
     while True:
         offset = fh.tell()
