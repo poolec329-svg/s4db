@@ -15,7 +15,7 @@ _INDEX_FILENAME = "index.idx"
 def compact(db: "S4DB") -> None:
     """Rewrites all data files to remove stale and deleted entries.
 
-    Reads every entry from every existing data file and retains only live entries —
+    Reads every entry from every existing data file and retains only live entries -
     those whose (file_num, offset) still matches the in-memory index. Tombstones and
     superseded values are dropped. Writes compacted output into new numbered files
     respecting db.max_file_size. After writing, updates the index and saves it, then
@@ -63,7 +63,7 @@ def compact(db: "S4DB") -> None:
                     idx_entry = db._index.get(key)
                     if idx_entry is None or idx_entry.file_num != file_num or idx_entry.offset != entry_offset:
                         continue
-                    # Live entry — write to compacted file
+                    # Live entry - write to compacted file
                     if out_fh is None:
                         open_new_file()
                     if out_fh.tell() > HEADER_SIZE and out_fh.tell() + len(raw) > db.max_file_size:

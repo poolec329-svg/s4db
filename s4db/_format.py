@@ -83,7 +83,7 @@ def stream_file_entries(fh):
     """Yields (offset, raw_bytes, key, flags) for each entry in a data file handle.
 
     Seeks past the file header before reading. Stops cleanly when a partial or missing
-    header is encountered at EOF. Does not validate CRCs — callers that need integrity
+    header is encountered at EOF. Does not validate CRCs - callers that need integrity
     checking should call unpack_entry_at on the yielded raw_bytes.
     """
     fh.seek(HEADER_SIZE)

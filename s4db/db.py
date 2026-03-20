@@ -99,7 +99,7 @@ class S4DB:
     def delete(self, keys: list[str]) -> None:
         """Writes tombstones for each key that currently exists in the index.
 
-        Keys not present in the index are silently skipped — no tombstone is written
+        Keys not present in the index are silently skipped - no tombstone is written
         for them. The index is updated and saved after writing.
         """
         tombstones = [

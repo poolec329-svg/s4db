@@ -31,8 +31,8 @@ python3 -m build
 
 This produces two artifacts in `dist/`:
 
-- `s4db-<version>.tar.gz` — source distribution
-- `s4db-<version>-py3-none-any.whl` — wheel
+- `s4db-<version>.tar.gz` - source distribution
+- `s4db-<version>-py3-none-any.whl` - wheel
 
 ## Check the Distribution
 

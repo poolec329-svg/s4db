@@ -1,6 +1,6 @@
 # s4db
 
-A lightweight key-value store where keys and values are strings. Data is written to numbered binary files on disk and synced to S3. Values are Snappy-compressed. An in-memory index tracks the exact file and byte offset for every live key, so reads never scan — they seek directly.
+A lightweight key-value store where keys and values are strings. Data is written to numbered binary files on disk and synced to S3. Values are Snappy-compressed. An in-memory index tracks the exact file and byte offset for every live key, so reads never scan - they seek directly.
 
 ## Installation
 
@@ -37,7 +37,7 @@ db.delete(["hello"])
 print(db.get("hello"))  # None
 ```
 
-On `__init__`, the index is loaded from `local_dir` if present. If not found locally, it is downloaded from S3. If neither exists, the database starts empty. Data files are not downloaded automatically — only the index is.
+On `__init__`, the index is loaded from `local_dir` if present. If not found locally, it is downloaded from S3. If neither exists, the database starts empty. Data files are not downloaded automatically - only the index is.
 
 ## API reference
 
@@ -52,7 +52,7 @@ db.put({"key1": "value1", "key2": "value2"})
 - Overwrites any existing value for a key.
 - If the current data file would exceed `max_file_size`, a new file is opened before writing.
 - Updates the in-memory index and saves it to disk before returning.
-- Does not push to S3 automatically — call `upload()` when ready to sync.
+- Does not push to S3 automatically - call `upload()` when ready to sync.
 
 ### `get(key: str) -> str | None`
 
@@ -64,7 +64,7 @@ value = db.get("key1")
 
 - Looks up the key in the index to get the file number and byte offset.
 - If the data file is present in `local_dir`, reads exactly those bytes from disk.
-- If the file is not local, fetches only that entry's bytes from S3 using a range request — the full file is never downloaded implicitly.
+- If the file is not local, fetches only that entry's bytes from S3 using a range request - the full file is never downloaded implicitly.
 - Call `download()` first if you want all reads served from disk.
 
 ### `delete(keys: list[str]) -> None`
@@ -100,7 +100,7 @@ db.upload()
 ```
 
 - Useful after bulk operations like `compact()` or `rebuild_index()` to force a full re-sync.
-- Does not check whether S3 already has the latest version — it uploads everything.
+- Does not check whether S3 already has the latest version - it uploads everything.
 
 ### `compact() -> None`
 
@@ -111,7 +111,7 @@ db.compact()
 ```
 
 - Reads every entry from every local data file.
-- Retains only entries whose (file number, byte offset) still matches the in-memory index — stale overwrites and tombstones are dropped.
+- Retains only entries whose (file number, byte offset) still matches the in-memory index - stale overwrites and tombstones are dropped.
 - Writes the surviving entries into new sequentially numbered files, respecting `max_file_size`.
 - Clears and rebuilds the index from the new locations, saves it, removes the old local files, deletes the old S3 objects, and uploads the new files and index.
 - Run `download()` first if `local_dir` may be out of date.
@@ -133,7 +133,7 @@ db.rebuild_index()
 
 ### Context manager
 
-`S4DB` supports the context manager protocol. The `__exit__` is a no-op — there is no connection to close — but the pattern keeps resource handling consistent.
+`S4DB` supports the context manager protocol. The `__exit__` is a no-op - there is no connection to close - but the pattern keeps resource handling consistent.
 
 ```python
 with S4DB("/tmp/my-db", "my-bucket", "my-db/") as db:
@@ -221,7 +221,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Tests use [moto](https://github.com/getmoto/moto) to mock S3 — no real AWS credentials required.
+Tests use [moto](https://github.com/getmoto/moto) to mock S3 - no real AWS credentials required.
 
 ## License
 

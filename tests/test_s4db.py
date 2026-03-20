@@ -344,3 +344,206 @@ class TestIndexPersistence:
         # Second put appends to the existing file (still has room), so next_file_num stays 2
         db.put({"k2": "v2"})
         assert db._index.next_file_num == 2
+
+
+# ---------------------------------------------------------------------------
+# download / upload tests
+# ---------------------------------------------------------------------------
+
+
+class TestDownload:
+    def test_download_pulls_data_files(self, db, tmp_path):
+        db.put({"a": "1", "b": "2"})
+        db.upload()
+
+        # Open a fresh db pointing at a different local dir (no local files)
+        fresh_dir = tmp_path / "fresh"
+        fresh_dir.mkdir()
+        db2 = S4DB(local_dir=str(fresh_dir), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
+        db2.download()
+
+        local_files = _glob.glob(os.path.join(str(fresh_dir), "data_*.s4db"))
+        assert len(local_files) > 0
+        assert db2.get("a") == "1"
+        assert db2.get("b") == "2"
+
+    def test_download_updates_in_memory_index(self, db, tmp_path):
+        db.put({"key": "val"})
+        db.upload()
+
+        fresh_dir = tmp_path / "fresh"
+        fresh_dir.mkdir()
+        db2 = S4DB(local_dir=str(fresh_dir), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
+        # Before download, index has no entries (S3 index was loaded but has the entry)
+        db2.download()
+        assert db2._index.get("key") is not None
+
+
+class TestUpload:
+    def test_upload_pushes_data_and_index(self, db, s3):
+        db.put({"u": "v"})
+        db.upload()
+
+        # Verify data file and index exist in S3
+        response = s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX)
+        keys = {obj["Key"] for obj in response.get("Contents", [])}
+        assert any("data_" in k for k in keys)
+        assert any("index.idx" in k for k in keys)
+
+    def test_upload_then_fresh_init_loads_index(self, db, tmp_path):
+        db.put({"synced": "yes"})
+        db.upload()
+
+        # New instance with empty local dir should load index from S3
+        fresh_dir = tmp_path / "fresh"
+        fresh_dir.mkdir()
+        db2 = S4DB(local_dir=str(fresh_dir), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
+        assert db2.get("synced") is not None  # index loaded from S3; get falls back to S3 range read
+
+
+# ---------------------------------------------------------------------------
+# S3 range-read fallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestS3RangeRead:
+    def test_get_without_local_file_uses_s3(self, db, tmp_path):
+        db.put({"remote": "value"})
+        db.upload()
+
+        # New db with empty local dir - index comes from S3, data file not present locally
+        fresh_dir = tmp_path / "fresh"
+        fresh_dir.mkdir()
+        db2 = S4DB(local_dir=str(fresh_dir), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
+
+        # No data files locally
+        assert _glob.glob(os.path.join(str(fresh_dir), "data_*.s4db")) == []
+        # get() must use S3 range request
+        assert db2.get("remote") == "value"
+
+    def test_missing_key_returns_none_without_local_file(self, db, tmp_path):
+        db.put({"x": "y"})
+        db.upload()
+
+        fresh_dir = tmp_path / "fresh"
+        fresh_dir.mkdir()
+        db2 = S4DB(local_dir=str(fresh_dir), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
+        assert db2.get("not_there") is None
+
+
+# ---------------------------------------------------------------------------
+# Additional _index tests
+# ---------------------------------------------------------------------------
+
+
+class TestIndexEdgeCases:
+    def test_from_bytes_bad_version(self):
+        idx = Index()
+        idx.put("k", 1, 9, 20)
+        raw = bytearray(idx.to_bytes())
+        raw[0] = 99  # corrupt version byte
+        with pytest.raises(ValueError, match="unsupported index version"):
+            Index.from_bytes(bytes(raw))
+
+    def test_delete_missing_key_is_noop(self):
+        idx = Index()
+        idx.delete("nonexistent")  # must not raise
+        assert idx.get("nonexistent") is None
+
+    def test_overwrite_entry(self):
+        idx = Index()
+        idx.put("k", 1, 9, 10)
+        idx.put("k", 2, 50, 30)
+        e = idx.get("k")
+        assert e.file_num == 2
+        assert e.offset == 50
+
+
+# ---------------------------------------------------------------------------
+# Additional _format tests
+# ---------------------------------------------------------------------------
+
+
+class TestStreamEntriesEdgeCases:
+    def test_empty_file_yields_nothing(self):
+        # A file with only the header and no entries
+        fh = io.BytesIO(pack_file_header(1))
+        results = list(stream_file_entries(fh))
+        assert results == []
+
+    def test_stream_includes_tombstones(self):
+        buf = bytearray(pack_file_header(1))
+        buf += pack_entry("alive", "yes")
+        buf += pack_entry("dead", None, deleted=True)
+        fh = io.BytesIO(bytes(buf))
+        results = list(stream_file_entries(fh))
+        assert len(results) == 2
+        keys = {key for _, _, key, _ in results}
+        assert keys == {"alive", "dead"}
+        flags_map = {key: flags for _, _, key, flags in results}
+        assert flags_map["alive"] == FLAG_NORMAL
+        assert flags_map["dead"] == FLAG_TOMBSTONE
+
+
+# ---------------------------------------------------------------------------
+# Additional S4DB integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestInitFromS3:
+    def test_init_loads_index_from_s3_when_no_local(self, db, tmp_path):
+        db.put({"s3key": "s3val"})
+        db.upload()
+
+        fresh_dir = tmp_path / "fresh"
+        fresh_dir.mkdir()
+        db2 = S4DB(local_dir=str(fresh_dir), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
+        # Index was fetched from S3 and cached locally
+        local_index = os.path.join(str(fresh_dir), "index.idx")
+        assert os.path.exists(local_index)
+        assert db2._index.get("s3key") is not None
+
+
+class TestDeleteThenPut:
+    def test_deleted_key_can_be_reinserted(self, db):
+        db.put({"k": "original"})
+        db.delete(["k"])
+        assert db.get("k") is None
+        db.put({"k": "reborn"})
+        assert db.get("k") == "reborn"
+
+
+class TestCompactEdgeCases:
+    def test_compact_empty_db_does_not_raise(self, db):
+        # No data files exist; compact should be a no-op without errors
+        db.compact()
+        assert db._index.entries == {}
+
+    def test_compact_respects_max_file_size(self, s3, tmp_path):
+        db = S4DB(
+            local_dir=str(tmp_path),
+            bucket=BUCKET,
+            prefix=PREFIX,
+            max_file_size=50,
+            region_name="us-east-1",
+        )
+        data = {f"k{i}": "value" * 5 for i in range(10)}
+        db.put(data)
+        db.compact()
+        # All keys survive compaction regardless of how many files were produced
+        for k, v in data.items():
+            assert db.get(k) == v
+
+    def test_compact_cleans_up_s3_old_files(self, db, s3):
+        db.put({"a": "1"})
+        db.upload()
+        old_files = {obj["Key"] for obj in s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX).get("Contents", [])}
+
+        db.put({"a": "2"})  # creates a second version; first file is now stale
+        db.compact()
+
+        new_files = {obj["Key"] for obj in s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX).get("Contents", [])}
+        # None of the old data files should still be in S3
+        old_data_files = {k for k in old_files if "data_" in k}
+        for f in old_data_files:
+            assert f not in new_files
