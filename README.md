@@ -67,6 +67,18 @@ value = db.get("key1")
 - If the file is not local, fetches only that entry's bytes from S3 using a range request - the full file is never downloaded implicitly.
 - Call `download()` first if you want all reads served from disk.
 
+### `keys() -> list[str]`
+
+Returns a list of all live keys currently in the database.
+
+```python
+all_keys = db.keys()
+```
+
+- Reads directly from the in-memory index — no disk or S3 access.
+- Only returns keys that are live (not deleted). Tombstoned keys are never included.
+- The order of the returned list is not guaranteed.
+
 ### `delete(keys: list[str]) -> None`
 
 Writes tombstone entries for each key that exists in the index.

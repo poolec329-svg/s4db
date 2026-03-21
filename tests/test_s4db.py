@@ -547,3 +547,31 @@ class TestCompactEdgeCases:
         old_data_files = {k for k in old_files if "data_" in k}
         for f in old_data_files:
             assert f not in new_files
+
+
+# ---------------------------------------------------------------------------
+# keys() tests
+# ---------------------------------------------------------------------------
+
+
+class TestKeys:
+    def test_empty_db_returns_empty_list(self, db):
+        assert db.keys() == []
+
+    def test_returns_all_put_keys(self, db):
+        db.put({"a": "1", "b": "2", "c": "3"})
+        assert sorted(db.keys()) == ["a", "b", "c"]
+
+    def test_deleted_keys_not_included(self, db):
+        db.put({"a": "1", "b": "2"})
+        db.delete(["a"])
+        assert db.keys() == ["b"]
+
+    def test_overwritten_key_appears_once(self, db):
+        db.put({"k": "old"})
+        db.put({"k": "new"})
+        assert db.keys() == ["k"]
+
+    def test_returns_list_type(self, db):
+        db.put({"x": "y"})
+        assert isinstance(db.keys(), list)

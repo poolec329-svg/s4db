@@ -65,7 +65,7 @@ class S4DB:
         """Upload all local data files and the index to S3."""
         for path in sorted(_glob.glob(os.path.join(self.local_dir, "data_*.s4db"))):
             self.storage.upload(path, os.path.basename(path))
-        self._save_index()
+        self.flush()
         local_index = os.path.join(self.local_dir, _INDEX_FILENAME)
         self.storage.upload(local_index, _INDEX_FILENAME)
 
@@ -111,6 +111,10 @@ class S4DB:
         if tombstones:
             self._write_entries(tombstones)
 
+    def keys(self) -> list[str]:
+        """Returns a list of all live keys in the database."""
+        return list(self._index.entries.keys())
+
     def flush(self) -> None:
         """Flushes the in-memory index to disk."""
         self._save_index()
@@ -142,7 +146,7 @@ class S4DB:
 
         new_index.next_file_num = last_file_num + 1 if data_files else 1
         self._index = new_index
-        self._save_index()
+        self.flush()
 
     def _save_index(self) -> None:
         """Serializes the in-memory index and writes it to the local index file."""
@@ -154,11 +158,21 @@ class S4DB:
     def _write_entries(self, entries: list[tuple[str, str | None, bool]]) -> None:
         """Appends a batch of entries to the current data file, rolling to a new file when needed.
 
-        Entries is a list of (key, value, is_tombstone) tuples. Resumes the latest data
-        file when it is under max_file_size; otherwise creates a new file. If a single
-        entry would push a non-empty file over the size limit, roll() is called first so
-        the entry lands at the start of a fresh file. Index and on-disk state are updated
-        atomically after all entries are written.
+        Entries is a list of (key, value, is_tombstone) tuples.
+
+        A new data file is created when any of the following is true:
+          - No previous file exists (fresh database, next_file_num == 1).
+          - The latest data file is not present on disk.
+          - The latest data file is at or over max_file_size.
+        Otherwise, entries are appended to the existing file.
+
+        Mid-batch rolling: if writing the next entry would push the current file past
+        max_file_size and the file already contains at least one entry (pos > HEADER_SIZE),
+        roll() closes the file and opens the next sequentially numbered one before writing.
+        A single entry that exceeds max_file_size on its own is never split; it is written
+        to an otherwise-empty file, making that file exceed the soft limit.
+
+        Index and on-disk state are updated after all entries are written.
         """
         # Resume writing into the latest file if it still has room, otherwise start a new one
         latest_file_num = self._index.next_file_num - 1
@@ -202,7 +216,7 @@ class S4DB:
                 self._index.delete(key)
 
         self._index.next_file_num = file_num + 1
-        self._save_index()
+        self.flush()
 
     def __enter__(self) -> "S4DB":
         """Supports use as a context manager; returns self."""
