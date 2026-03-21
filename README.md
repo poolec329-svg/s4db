@@ -25,10 +25,10 @@ from s4db import S4DB
 
 db = S4DB(
     local_dir="/tmp/my-db",       # created automatically if it does not exist
-    bucket="my-bucket",
+    bucket="xxxxxxxx",
     prefix="my-db/",              # S3 key prefix; include a trailing slash
     max_file_size=64*1024*1024,   # optional, default 64 MB
-    region_name="us-east-1",      # any extra kwargs go to boto3.client("s3", ...)
+    region_name="ap-south-1",      # any extra kwargs go to boto3.client("s3", ...)
 )
 
 db.put({"hello": "world"})
@@ -101,6 +101,17 @@ db.upload()
 
 - Useful after bulk operations like `compact()` or `rebuild_index()` to force a full re-sync.
 - Does not check whether S3 already has the latest version - it uploads everything.
+
+### `flush() -> None`
+
+Writes the in-memory index to disk without uploading to S3.
+
+```python
+db.flush()
+```
+
+- Useful after a series of `put()` / `delete()` calls when you want to ensure the index is persisted locally before a potential crash, without doing a full `upload()`.
+- `put()` and `delete()` already call `flush()` internally, so this is only needed if you bypass those methods or want an explicit checkpoint.
 
 ### `compact() -> None`
 

@@ -65,6 +65,7 @@ class S4DB:
         """Upload all local data files and the index to S3."""
         for path in sorted(_glob.glob(os.path.join(self.local_dir, "data_*.s4db"))):
             self.storage.upload(path, os.path.basename(path))
+        self._save_index()
         local_index = os.path.join(self.local_dir, _INDEX_FILENAME)
         self.storage.upload(local_index, _INDEX_FILENAME)
 
@@ -109,6 +110,10 @@ class S4DB:
         ]
         if tombstones:
             self._write_entries(tombstones)
+
+    def flush(self) -> None:
+        """Flushes the in-memory index to disk."""
+        self._save_index()
 
     def compact(self) -> None:
         """Triggers compaction, rewriting data files to reclaim space from deleted/stale entries."""
