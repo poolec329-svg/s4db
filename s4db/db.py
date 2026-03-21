@@ -1,5 +1,6 @@
 import glob as _glob
 import os
+import tempfile
 
 from ._format import pack_file_header, pack_entry, unpack_entry_at, unpack_file_header, stream_file_entries, FLAG_TOMBSTONE, HEADER_SIZE
 from ._index import Index
@@ -18,61 +19,77 @@ def _data_filename(file_num: int) -> str:
 class S4DB:
     def __init__(
         self,
-        local_dir: str,
         bucket: str,
         prefix: str,
+        local_dir: str | None = None,
         max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
         **boto_kwargs,
     ):
-        """Opens (or creates) an S4DB database backed by local_dir and an S3 bucket.
+        """Opens (or creates) an S4DB database backed by an S3 bucket.
+
+        local_dir is optional. If omitted, no local directory is created or used until
+        a write operation (put/delete) is called, at which point a temporary directory
+        is created automatically. Pass local_dir explicitly to control where data files
+        are stored on disk.
 
         On init the index is fetched from S3 into memory; if it does not exist the
         database starts empty. The index is never read from a local file on startup.
         max_file_size controls when data files are rolled over (default 64 MB).
         Extra boto_kwargs are forwarded to the S3 client.
         """
-        self.local_dir = local_dir
         self.bucket = bucket
         self.prefix = prefix
+        self.local_dir = local_dir
         self.max_file_size = max_file_size
         self.storage = S3Storage(bucket, prefix, **boto_kwargs)
         self._index = Index()
 
-        os.makedirs(local_dir, exist_ok=True)
-
-        # Load index from S3 into memory only — no local file caching on init
+        # Load index from S3 into memory only - no local file caching on init
         if self.storage.exists(_INDEX_FILENAME):
             self._index = Index.from_bytes(self.storage.download_bytes(_INDEX_FILENAME))
 
+    def _get_local_dir(self) -> str:
+        """Returns local_dir, creating a temporary directory if none was provided."""
+        if self.local_dir is None:
+            self.local_dir = tempfile.mkdtemp(prefix="s4db_")
+        os.makedirs(self.local_dir, exist_ok=True)
+        return self.local_dir
+
     def download(self) -> None:
         """Download all data files and the index from S3 into local_dir."""
+        local_dir = self._get_local_dir()
         for filename in self.storage.list_data_files():
-            self.storage.download_file(filename, os.path.join(self.local_dir, filename))
+            self.storage.download_file(filename, os.path.join(local_dir, filename))
 
         self._index = Index.from_bytes(self.storage.download_bytes(_INDEX_FILENAME))
 
     def upload(self) -> None:
         """Upload all local data files and the index to S3."""
-        for path in sorted(_glob.glob(os.path.join(self.local_dir, "data_*.s4db"))):
-            self.storage.upload(path, os.path.basename(path))
+        if self.local_dir:
+            for path in sorted(_glob.glob(os.path.join(self.local_dir, "data_*.s4db"))):
+                self.storage.upload(path, os.path.basename(path))
         self.storage.upload_bytes(self._index.to_bytes(), _INDEX_FILENAME)
 
     def get(self, key: str) -> str | None:
         """Returns the value for key, or None if it does not exist or has been deleted.
 
-        Reads from the local data file when it is present; falls back to a ranged S3
-        read for the exact byte span of the entry, avoiding a full file download.
+        If local_dir is set and the data file is present locally, reads from disk.
+        Otherwise fetches only that entry's bytes from S3 using a range request -
+        no local directory is needed for read-only access.
         """
         entry = self._index.get(key)
         if entry is None:
             return None
-        local_path = os.path.join(self.local_dir, _data_filename(entry.file_num))
-        if os.path.exists(local_path):
-            with open(local_path, "rb") as fh:
-                fh.seek(entry.offset)
-                raw = fh.read(entry.length)
-        else:
-            raw = self.storage.read_range(_data_filename(entry.file_num), entry.offset, entry.length)
+        filename = _data_filename(entry.file_num)
+        if self.local_dir:
+            local_path = os.path.join(self.local_dir, filename)
+            if os.path.exists(local_path):
+                with open(local_path, "rb") as fh:
+                    fh.seek(entry.offset)
+                    raw = fh.read(entry.length)
+                _, value, _, _ = unpack_entry_at(raw, 0)
+                return value
+        raw = self.storage.read_range(filename, entry.offset, entry.length)
         _, value, _, _ = unpack_entry_at(raw, 0)
         return value
 
@@ -118,7 +135,8 @@ class S4DB:
         entries sequentially so later writes correctly overwrite earlier ones and tombstones
         remove deleted keys. Persists the rebuilt index to disk before returning.
         """
-        data_files = sorted(_glob.glob(os.path.join(self.local_dir, "data_*.s4db")))
+        local_dir = self._get_local_dir()
+        data_files = sorted(_glob.glob(os.path.join(local_dir, "data_*.s4db")))
         new_index = Index()
         last_file_num = 0
 
@@ -139,7 +157,7 @@ class S4DB:
     def _save_index(self) -> None:
         """Serializes the in-memory index and writes it to the local index file."""
         data = self._index.to_bytes()
-        local_path = os.path.join(self.local_dir, _INDEX_FILENAME)
+        local_path = os.path.join(self._get_local_dir(), _INDEX_FILENAME)
         with open(local_path, "wb") as fh:
             fh.write(data)
 
@@ -162,15 +180,17 @@ class S4DB:
 
         Index and on-disk state are updated after all entries are written.
         """
+        local_dir = self._get_local_dir()
+
         # Resume writing into the latest file if it still has room, otherwise start a new one
         latest_file_num = self._index.next_file_num - 1
-        latest_path = os.path.join(self.local_dir, _data_filename(latest_file_num))
+        latest_path = os.path.join(local_dir, _data_filename(latest_file_num))
         if latest_file_num >= 1 and os.path.exists(latest_path) and os.path.getsize(latest_path) < self.max_file_size:
             file_num = latest_file_num
             fh = open(latest_path, "ab")
         else:
             file_num = self._index.next_file_num
-            fh = open(os.path.join(self.local_dir, _data_filename(file_num)), "wb")
+            fh = open(os.path.join(local_dir, _data_filename(file_num)), "wb")
             fh.write(pack_file_header(file_num))
 
         written: list[tuple[str, int, int, int]] = []
@@ -180,7 +200,7 @@ class S4DB:
             nonlocal file_num, fh
             fh.close()
             file_num += 1
-            fh = open(os.path.join(self.local_dir, _data_filename(file_num)), "wb")
+            fh = open(os.path.join(local_dir, _data_filename(file_num)), "wb")
             fh.write(pack_file_header(file_num))
 
         try:

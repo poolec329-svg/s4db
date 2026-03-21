@@ -24,11 +24,9 @@ apt-get install libsnappy-dev
 from s4db import S4DB
 
 db = S4DB(
-    local_dir="/tmp/my-db",       # created automatically if it does not exist
-    bucket="xxxxxxxx",
+    bucket="my-bucket",
     prefix="my-db/",              # S3 key prefix; include a trailing slash
-    max_file_size=64*1024*1024,   # optional, default 64 MB
-    region_name="ap-south-1",      # any extra kwargs go to boto3.client("s3", ...)
+    region_name="ap-south-1",     # any extra kwargs go to boto3.client("s3", ...)
 )
 
 db.put({"hello": "world"})
@@ -37,9 +35,25 @@ db.delete(["hello"])
 print(db.get("hello"))  # None
 ```
 
-On `__init__`, the index is loaded from `local_dir` if present. If not found locally, it is downloaded from S3. If neither exists, the database starts empty. Data files are not downloaded automatically - only the index is.
+On `__init__`, the index is downloaded from S3 into memory. If no index exists, the database starts empty. No local directory is created or used until a write operation (`put` / `delete`) is called.
 
 ## API reference
+
+### `__init__(bucket, prefix, local_dir=None, max_file_size=...)`
+
+```python
+db = S4DB(
+    bucket="my-bucket",
+    prefix="my-db/",
+    local_dir="/tmp/my-db",       # optional; a temp dir is created automatically if omitted
+    max_file_size=64*1024*1024,   # optional, default 64 MB
+    region_name="ap-south-1",     # any extra kwargs go to boto3.client("s3", ...)
+)
+```
+
+- `local_dir` is optional. If not provided, no directory is touched until a `put()` or `delete()` is called, at which point a temporary directory is created automatically.
+- Read-only operations (`get`, `keys`) never require a local directory - they use the in-memory index and S3 range requests.
+- The index is always loaded from S3 into memory on init; it is never read from a local file.
 
 ### `put(items: dict[str, str]) -> None`
 
@@ -51,7 +65,7 @@ db.put({"key1": "value1", "key2": "value2"})
 
 - Overwrites any existing value for a key.
 - If the current data file would exceed `max_file_size`, a new file is opened before writing.
-- Updates the in-memory index and saves it to disk before returning.
+- Creates `local_dir` (or a temp dir) on first call if none was provided.
 - Does not push to S3 automatically - call `upload()` when ready to sync.
 
 ### `get(key: str) -> str | None`
@@ -63,8 +77,8 @@ value = db.get("key1")
 ```
 
 - Looks up the key in the index to get the file number and byte offset.
-- If the data file is present in `local_dir`, reads exactly those bytes from disk.
-- If the file is not local, fetches only that entry's bytes from S3 using a range request - the full file is never downloaded implicitly.
+- If `local_dir` is set and the data file is present there, reads exactly those bytes from disk.
+- Otherwise fetches only that entry's bytes from S3 using a range request - the full file is never downloaded, and no local directory is needed.
 - Call `download()` first if you want all reads served from disk.
 
 ### `keys() -> list[str]`
@@ -75,7 +89,7 @@ Returns a list of all live keys currently in the database.
 all_keys = db.keys()
 ```
 
-- Reads directly from the in-memory index — no disk or S3 access.
+- Reads directly from the in-memory index - no disk or S3 access.
 - Only returns keys that are live (not deleted). Tombstoned keys are never included.
 - The order of the returned list is not guaranteed.
 
@@ -99,31 +113,33 @@ Downloads all data files and the index from S3 into `local_dir`.
 db.download()
 ```
 
-- Use this when pointing a fresh `local_dir` at an existing S3 database.
-- After `download()`, all reads are served from disk with no S3 round trips.
+- Creates `local_dir` (or a temp dir) if none was provided.
+- Use this when you want all subsequent reads served from disk with no S3 round trips.
 - Overwrites any local files with the same name.
 
 ### `upload() -> None`
 
-Pushes all local data files and the index to S3.
+Pushes all local data files and the in-memory index to S3.
 
 ```python
 db.upload()
 ```
 
+- The index is serialized directly from memory - no local index file is required.
+- If `local_dir` is not set, only the index is uploaded (no local data files exist).
 - Useful after bulk operations like `compact()` or `rebuild_index()` to force a full re-sync.
 - Does not check whether S3 already has the latest version - it uploads everything.
 
 ### `flush() -> None`
 
-Writes the in-memory index to disk without uploading to S3.
+Writes the in-memory index to disk.
 
 ```python
 db.flush()
 ```
 
-- Useful after a series of `put()` / `delete()` calls when you want to ensure the index is persisted locally before a potential crash, without doing a full `upload()`.
-- `put()` and `delete()` already call `flush()` internally, so this is only needed if you bypass those methods or want an explicit checkpoint.
+- Creates `local_dir` (or a temp dir) if none was provided.
+- `put()` and `delete()` already call `flush()` internally.
 
 ### `compact() -> None`
 
@@ -159,7 +175,7 @@ db.rebuild_index()
 `S4DB` supports the context manager protocol. The `__exit__` is a no-op - there is no connection to close - but the pattern keeps resource handling consistent.
 
 ```python
-with S4DB("/tmp/my-db", "my-bucket", "my-db/") as db:
+with S4DB("my-bucket", "my-db/") as db:
     db.put({"k": "v"})
     print(db.get("k"))
 ```
@@ -181,27 +197,36 @@ Data files are named `data_NNNNNN.s4db` with zero-padded six-digit sequence numb
 
 ## Typical workflows
 
+### Read-only from S3 - no local directory needed
+
+```python
+db = S4DB("my-bucket", "my-db/")
+# Index is loaded from S3 into memory; gets use S3 range requests
+print(db.get("some-key"))
+print(db.keys())
+```
+
 ### Write locally, sync later
 
 ```python
-db = S4DB("/tmp/my-db", "my-bucket", "my-db/")
+db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
 db.put({"a": "1", "b": "2"})
 db.delete(["a"])
 db.upload()   # push everything to S3 when done
 ```
 
-### Read-only from S3 without downloading all files
+### Write without specifying local_dir (temp dir created automatically)
 
 ```python
-db = S4DB("/tmp/my-db", "my-bucket", "my-db/")
-# Index is loaded automatically; individual gets use S3 range requests
-print(db.get("some-key"))
+db = S4DB("my-bucket", "my-db/")
+db.put({"a": "1"})   # temp dir created here on first write
+db.upload()
 ```
 
 ### Full local mirror
 
 ```python
-db = S4DB("/tmp/my-db", "my-bucket", "my-db/")
+db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
 db.download()   # pull everything local
 print(db.get("some-key"))   # served from disk, no S3 call
 ```
@@ -209,7 +234,7 @@ print(db.get("some-key"))   # served from disk, no S3 call
 ### Periodic compaction
 
 ```python
-db = S4DB("/tmp/my-db", "my-bucket", "my-db/")
+db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
 db.download()   # ensure all data files are present
 db.compact()    # rewrite, clean up S3, upload new files
 ```
@@ -217,7 +242,7 @@ db.compact()    # rewrite, clean up S3, upload new files
 ### Index recovery
 
 ```python
-db = S4DB("/tmp/my-db", "my-bucket", "my-db/")
+db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
 db.download()       # pull all data files
 db.rebuild_index()  # reconstruct index from data files
 db.upload()         # push repaired index to S3
@@ -225,6 +250,7 @@ db.upload()         # push repaired index to S3
 
 ## Edge cases and gotchas
 
+- `local_dir` is not required for read-only usage. A temporary directory is created automatically on the first `put()` or `delete()` call if none was provided.
 - `put()` and `delete()` do not push to S3 automatically. Call `upload()` explicitly.
 - `get()` on a key whose data file is not local will make a ranged S3 request on every call. Use `download()` if you expect repeated access to the same keys.
 - `compact()` and `rebuild_index()` require all data files to be present in `local_dir`. Always run `download()` first if you are not certain the local directory is up to date.

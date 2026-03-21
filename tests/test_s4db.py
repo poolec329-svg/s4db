@@ -173,7 +173,7 @@ class TestS4DBInit:
 
     def test_init_loads_existing_index(self, db):
         db.put({"x": "y"})
-        # Re-open using same local_dir (index loaded from local file)
+        db.upload()  # index is loaded from S3 on init, so it must be uploaded first
         db2 = S4DB(local_dir=db.local_dir, bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
         assert db2.get("x") == "y"
 
@@ -498,9 +498,9 @@ class TestInitFromS3:
         fresh_dir = tmp_path / "fresh"
         fresh_dir.mkdir()
         db2 = S4DB(local_dir=str(fresh_dir), bucket=BUCKET, prefix=PREFIX, region_name="us-east-1")
-        # Index was fetched from S3 and cached locally
+        # Index is fetched from S3 into memory only - no local file written on init
         local_index = os.path.join(str(fresh_dir), "index.idx")
-        assert os.path.exists(local_index)
+        assert not os.path.exists(local_index)
         assert db2._index.get("s3key") is not None
 
 
